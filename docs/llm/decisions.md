@@ -34,3 +34,8 @@ Add a row when something is decided. Move a question to the decisions table once
 | --- | --- | --- | --- |
 | Q-11 | Units for each parameter (current ones are guesses from the equipment annexes) | Team decides, possibly with the professor | Team |
 | Q-12 | Who builds which module before 2026-11-13? | Split by module, one PR each | Team |
+| Q-13 | Are client reference values per client or per client **and product**? The as-is process (steps 6–7) picks the client's flour variety and narrows parameters to what that client requests; today `client_limits` is per parameter only and `lots.product` is free text | Keep per client in v1 and list per-product specs as an open issue in the technical spec, unless the team has time to add a products table | Team |
+| Q-14 | Does the Warehouse (Almacén) get app access? As-is step 3 lets the warehouse correct a certificate's lot, and the system alerts the lab | v1: warehouse only receives the email; lot corrections go through a transaction user and are audited | Team |
+| Q-15 | Attach the alveograph/farinograph charts to the certificate (as-is step 15)? | Optional file upload per inspection, or omit in v1 and document it | Team |
+| Q-16 | Email to the client always, or only for "special clients" (as-is step 18)? The functional requirements say always | Send when the client has `requires_certificate`; warehouse always gets it | Team |
+| Q-17 | Performance indicators (section 6.3 of the process document is empty) | Propose KPIs for `/reportes`: % of certificates with deviation, issue time, new inspections after equipment failure per period | Team |
