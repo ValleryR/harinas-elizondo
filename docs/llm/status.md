@@ -22,7 +22,7 @@ Each step is one PR. Modules after step 3 can run in parallel.
 2. [x] Session in the app shell (inside `<Suspense>`), `proxy.ts` redirect to `/login`, role guard helper for server actions, audit log helper (BR-AUD-01). Done 2026-11-04: `src/lib/session.ts` (`getCurrentUser`, `requireUser`, `requireRole`), `src/lib/permissions.ts`, `src/lib/audit.ts`, `src/proxy.ts`, nav and panel filtered by role, user menu with sign-out
 3. [x] Clientes (UC-02), merged from PR #2 and preserved alongside session/roles and Equipos from PR #3. Directory, create/edit/deactivate/reactivate and client reference limits are implemented with server-side role checks and audit rows. Live Neon CRUD verification remains pending.
 4. [x] Equipos (UC-01) with generated key, parameters, limits, history and the BR-EQP-03 block. Done 2026-11-04 in `feat/equipos-uc01` (stacked on `feat/session-roles-audit`): list with status filter, create, edit, inactivate/reactivate/retire with reason (D-16), international limits per parameter, change history from the audit log. Rules in `src/lib/domain/equipment.ts`. Checked end to end in a browser against a local database; still to check against Neon
-5. [ ] Lotes and Inspecciones (UC-03, UC-04) with automatic sequence, completeness and deviation preview
+5. [x] Lotes and Inspecciones (UC-03, UC-04) with automatic sequence, completeness and deviation preview. Done 2026-11-04 in `feat/lotes-inspecciones` (stacked on `feat/equipos-uc01`): lot list with search, create and edit (locked once certified), inspections started from the lot with the system sequence, re-inspection only after a complete one and with the equipment-failure reason (D-15), capture of both machines with live deviation preview against international limits, partial saves, only usable equipment (BR-EQP-03). Rules in `src/lib/domain/lot.ts`. Checked end to end in a browser against a local database; still to check against Neon
 6. [ ] Certificados (UC-05, UC-06, UC-07) with react-pdf, Resend, delivery evidence and inspection lock (D-13)
 7. [ ] Reportes (UC-08) with filters, charts, Excel export (Q-09)
 8. [ ] Bitácora screen
@@ -31,6 +31,29 @@ Each step is one PR. Modules after step 3 can run in parallel.
 9. [ ] Tests by type and their written guides ([testing.md](testing.md)), CI workflow
 10. [ ] Technical specification (Spanish), based on the case study template (Technical Overview, Screen and Report Design, Data Design, SQL Design, Behavior Design, Interface Design, Quality of Service, Database Design, Installation, Open and Closed Issues)
 11. [ ] Class presentation, team conclusions, individual lessons learned
+
+## Inspection follow-up (2026-11-04)
+
+- BR-INS-02/04: concurrent starts now fail on a sequence collision instead of retrying with an unauthorized next sequence. The sequence comes from the same latest inspection used for authorization.
+- Added server-action regression coverage for concurrent starts, incomplete inspections, query-role denial, unauthenticated redirects and certified-inspection write denial. Unit suite: 82 tests.
+- Manual verification guide: `docs/testing-inspections-es.md`. These tests mock database boundaries; live Neon and concurrent certification checks remain pending.
+
+## Professor/PDF alignment (2026-11-04)
+
+- Client forms now require fiscal address, RFC, contact name/email, and at least one delivery destination. Multiple destinations use a normalized child table; mutation and audit run together.
+- Migration 0001 applied to the configured database, preserving previous delivery destinations. Legacy fiscal addresses remain null pending real input. After the user corrected duplicate RFCs, a database preflight found no duplicates and migration 0002 (unique RFC) was applied. The database now enforces uniqueness, including concurrent writes.
+- Particular limits cannot widen international bounds. `assessQuality` keeps both international and applied-reference evaluations, ready for certificate integration; no PDF issuance is implemented by this follow-up.
+- Validation: 93 unit tests, typecheck, lint and production compilation (webpack) passed. Browser reached login; authenticated form/CRUD verification remains pending.
+- Detailed requirement audit: `docs/revision-requisitos-es.md`. Humidity and numerical standards remain unresolved. No private PDF or personal details copied into the public repo.
+
+## Delivery address form refinement (2026-11-04)
+
+- UC-02: each destination has its own labeled input. Users add another destination with a button below the fields and may remove extra fields, while retaining at least one. Server actions read repeated form entries and validate every address.
+- Existing destinations populate individual fields. UI verification behind the user's authenticated session remains pending.
+
+## Client duplicate alerts (2026-11-04)
+
+- RF-03: separate user-facing messages for duplicate RFC and SAP keys, both during preflight and concurrent database unique-constraint failures. Existing edits exclude the current client from duplicate lookup. Unit tests verify rejection without writes and concurrent-conflict messages.
 
 ## Waiting on the team
 
