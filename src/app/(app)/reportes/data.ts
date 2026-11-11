@@ -1,133 +1,94 @@
 import "server-only";
+import { and, asc, count, desc, eq, gte, isNotNull, lt, ne } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { certificates, clients, inspections, lots } from "@/lib/db/schema";
-import { and, gte, lte, eq, sql, desc } from "drizzle-orm";
-
-export interface ReportFilters {
-  startDate?: string;
-  endDate?: string;
-  clientId?: string;
-  status?: string;
-}
+import { certificateLines, certificates, clients, deliveries, inspections, lots, user } from "@/lib/db/schema";
+import { issuedAtBounds, type ReportFilters, type ReportRow, type ReportStatus } from "@/lib/domain/report";
+import { requireRole } from "@/lib/session";
 
 /**
- * Retrieves the historical list of issued quality certificates based on optional filters.
- * Satisfies RF-07 and UC-08.
+ * RF-07 · UC-08. Reads for the Reportes screen and the export. Each one checks the role
+ * itself (RF-01): transaction and query users can read reports.
  */
-export async function getCertificateHistory(filters: ReportFilters = {}) {
-  const db = await getDb();
-
-  const conditions = [];
-
-  if (filters.clientId) {
-    conditions.push(eq(certificates.clientId, filters.clientId));
-  }
-
-  if (filters.startDate) {
-    conditions.push(gte(certificates.createdAt, new Date(filters.startDate)));
-  }
-
-  if (filters.endDate) {
-    conditions.push(lte(certificates.createdAt, new Date(filters.endDate)));
-  }
-
-  return await db
-    .select({
-      id: certificates.id,
-      certificateNumber: certificates.id,
-      issuedAt: certificates.createdAt,
-      clientName: clients.businessName,
-      sapKey: clients.sapKey,
-      lotNumber: lots.id, // Using lot id or code depending on schema
-      inspectionSequence: inspections.sequence,
-      hasDeviations: certificates.status,
-      issuedByName: certificates.issuedBy,
-    })
-    .from(certificates)
-    .innerJoin(clients, eq(certificates.clientId, clients.id))
-    .innerJoin(lots, eq(certificates.lotId, lots.id))
-    .innerJoin(inspections, eq(certificates.inspectionId, inspections.id))
-    .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(desc(certificates.createdAt));
-}
 
 /**
- * Aggregates summary statistics and quality trends for charts and KPI cards.
- * Satisfies RF-07 and UC-08.
+ * Certificate history for a period and client, newest first, with the deviation count
+ * from the snapshot (D-10) and the failed deliveries. Drafts are never included because
+ * they have not been issued. The state filter is applied by the caller, so the
+ * statistics can still tell valid and cancelled certificates apart (D-25).
  */
-export async function getReportStatistics(filters: ReportFilters = {}) {
-  const db = await getDb();
+export async function loadReportRows(filters: Pick<ReportFilters, "from" | "to" | "clientId">): Promise<ReportRow[]> {
+  await requireRole("transaction", "query");
+  const db = getDb();
 
-  const conditions = [];
+  const { start, endExclusive } = issuedAtBounds(filters.from, filters.to);
+  const where = and(
+    ne(certificates.status, "draft"),
+    isNotNull(certificates.issuedAt),
+    start ? gte(certificates.issuedAt, start) : undefined,
+    endExclusive ? lt(certificates.issuedAt, endExclusive) : undefined,
+    filters.clientId ? eq(certificates.clientId, filters.clientId) : undefined,
+  );
 
-  if (filters.clientId) {
-    conditions.push(eq(certificates.clientId, filters.clientId));
-  }
+  const [rows, deviationRows, failedRows] = await Promise.all([
+    db
+      .select({
+        id: certificates.id,
+        status: certificates.status,
+        issuedAt: certificates.issuedAt,
+        clientId: certificates.clientId,
+        clientName: clients.businessName,
+        sapKey: clients.sapKey,
+        clientRfc: clients.rfc,
+        lotId: certificates.lotId,
+        product: lots.product,
+        inspectionSequence: inspections.sequence,
+        purchaseOrder: certificates.purchaseOrder,
+        invoiceNumber: certificates.invoiceNumber,
+        quantityRequested: certificates.quantityRequested,
+        quantityDelivered: certificates.quantityDelivered,
+        shippedOn: certificates.shippedOn,
+        issuedByName: user.name,
+        cancelledAt: certificates.cancelledAt,
+        cancellationReason: certificates.cancellationReason,
+      })
+      .from(certificates)
+      .innerJoin(clients, eq(clients.id, certificates.clientId))
+      .innerJoin(lots, eq(lots.id, certificates.lotId))
+      .innerJoin(inspections, eq(inspections.id, certificates.inspectionId))
+      .leftJoin(user, eq(user.id, certificates.issuedBy))
+      .where(where)
+      .orderBy(desc(certificates.issuedAt)),
+    db
+      .select({ certificateId: certificateLines.certificateId, n: count() })
+      .from(certificateLines)
+      .innerJoin(certificates, eq(certificates.id, certificateLines.certificateId))
+      .where(and(where, ne(certificateLines.deviation, 0)))
+      .groupBy(certificateLines.certificateId),
+    db
+      .select({ certificateId: deliveries.certificateId, n: count() })
+      .from(deliveries)
+      .innerJoin(certificates, eq(certificates.id, deliveries.certificateId))
+      .where(and(where, eq(deliveries.succeeded, false)))
+      .groupBy(deliveries.certificateId),
+  ]);
 
-  if (filters.startDate) {
-    conditions.push(gte(certificates.createdAt, new Date(filters.startDate)));
-  }
-
-  if (filters.endDate) {
-    conditions.push(lte(certificates.createdAt, new Date(filters.endDate)));
-  }
-
-  const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
-
-  const [totalCertificatesResult] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(certificates)
-    .where(whereClause);
-
-  const totalCertificates = totalCertificatesResult?.count ?? 0;
-  const totalDeviations = 0;
-  const complianceRate = 100;
-
-  return {
-    totalCertificates,
-    totalDeviations,
-    complianceRate,
-  };
+  const deviations = new Map(deviationRows.map((r) => [r.certificateId, r.n]));
+  const failed = new Map(failedRows.map((r) => [r.certificateId, r.n]));
+  return rows.map((row) => ({
+    ...row,
+    // Guaranteed by the WHERE clause above
+    status: row.status as ReportStatus,
+    issuedAt: row.issuedAt as Date,
+    deviations: deviations.get(row.id) ?? 0,
+    failedDeliveries: failed.get(row.id) ?? 0,
+  }));
 }
 
-/**
- * Fetches flattened exportable records designed for Excel export and Power BI integration.
- * Satisfies Q-09 and RF-07.
- */
-export async function getExportableCertificateData(filters: ReportFilters = {}) {
-  const db = await getDb();
-
-  const conditions = [];
-
-  if (filters.clientId) {
-    conditions.push(eq(certificates.clientId, filters.clientId));
-  }
-
-  if (filters.startDate) {
-    conditions.push(gte(certificates.createdAt, new Date(filters.startDate)));
-  }
-
-  if (filters.endDate) {
-    conditions.push(lte(certificates.createdAt, new Date(filters.endDate)));
-  }
-
-  return await db
-    .select({
-      certificateId: certificates.id,
-      issuedDate: certificates.createdAt,
-      clientSapKey: clients.sapKey,
-      clientName: clients.businessName,
-      clientRfc: clients.rfc,
-      lotId: lots.id,
-      inspectionSequence: inspections.sequence,
-      purchaseOrder: certificates.purchaseOrder,
-      invoiceNumber: certificates.invoiceNumber,
-      issuedBy: certificates.issuedBy,
-    })
-    .from(certificates)
-    .innerJoin(clients, eq(certificates.clientId, clients.id))
-    .innerJoin(lots, eq(certificates.lotId, lots.id))
-    .innerJoin(inspections, eq(certificates.inspectionId, inspections.id))
-    .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(desc(certificates.createdAt));
+/** Clients for the filter. Inactive ones are included because their history remains (RF-03). */
+export async function listReportClients() {
+  await requireRole("transaction", "query");
+  return getDb()
+    .select({ id: clients.id, sapKey: clients.sapKey, businessName: clients.businessName })
+    .from(clients)
+    .orderBy(asc(clients.businessName));
 }
